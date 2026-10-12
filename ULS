@@ -1,0 +1,101 @@
+"""
+Part 1: design torque, linkage geometry, LVDT transfer function.
+Hydraulic pitch, double-acting cylinder(s) per blade.
+Convention (as in the lecture source): cylinder fully RETRACTED = blade 90 deg (feather, no lift),
+cylinder fully EXTENDED = blade 0 deg (maximum lift). Emergency = retract (oil on the rod side).
+Run it: the plots appear in the output. Nothing is saved.
+Items marked [A] are ASSUMPTIONS that you should justify or change.
+"""
+import math
+import numpy as np
+try:
+    get_ipython().run_line_magic('matplotlib', 'inline')    # plot in the output (Jupyter / Colab / VS Code)
+except NameError:
+    pass
+import matplotlib.pyplot as plt
+
+# ------------------------------------------------------------------ 1. INPUT
+mu, beta = 200.0, 10.0          # kNm   Gumbel parameters (given in the assignment)
+life_years = 25                 # years (given)
+gamma_f = 1.35                  # [A] load factor, IEC 61400-1 (not verified)
+
+n_cyl = 1                       # [A] number of cylinders per blade (1 or 2)
+r_crank = 1.2                   # m   [A] lever radius: pitch axis -> cylinder pin on the lever
+d_pivot = 4.0                   # m   [A] distance: pitch axis -> cylinder pivot in the hub
+pitch_feather = 90.0            # deg  feather = fully retracted
+pitch_fine = 0.0                # deg  fully extended
+margin_deg = 2.0                # deg  [A] extra travel beyond the end positions (mechanical stops)
+alpha_feather = 30.0            # deg  [A] lever angle at the feather (retracted) position
+end_margin = 0.05               # m    [A] cushion at each end of the stroke
+dead_length = 0.5               # m    [A] extra length of a cylinder beyond its stroke
+
+bore, rod = 280.0, 160.0        # mm   [A] cylinder bore and rod diameter (try other sizes)
+p_relief = 28.0                 # MPa  [A] relief pressure
+eta_cyl = 0.95                  # -    [A] mechanical efficiency of the cylinder
+V_full = 10.0                   # V    output of the position sensor over the full stroke
+
+# ------------------------------------------------------------------ 2. DESIGN TORQUE
+N = life_years * 365 * 24 * 6                   # ten-minute periods in the design life
+q = 1.0 / N                                     # exceedance probability per 10 min
+M_design = mu - beta * math.log(-math.log(1 - q))   # kNm  x where F(x) = 1 - q
+T_d = gamma_f * M_design                        # kNm  design torque
+
+# ------------------------------------------------------------------ 3. GEOMETRY
+# alpha = angle at the pitch axis between the line axis->pivot and the lever.
+# The cylinder length is the distance pivot -> lever pin; the moment arm is the perpendicular
+# distance from the pitch axis to the cylinder line of action.
+p_hi, p_lo = pitch_feather + margin_deg, pitch_fine - margin_deg
+pitch = np.linspace(p_lo, p_hi, 600)                          # deg, from fine (extended) to feather (retracted)
+alpha = np.radians(alpha_feather + (p_hi - pitch))            # alpha grows as the cylinder extends
+L = np.sqrt(d_pivot**2 + r_crank**2 - 2 * d_pivot * r_crank * np.cos(alpha))   # m   cylinder length
+a = r_crank * d_pivot * np.sin(alpha) / L                                       # m   moment arm
+F = T_d / (n_cyl * a)                                                           # kN  force per cylinder
+
+a_min = a.min()
+F_d = T_d / (n_cyl * a_min)                      # kN  design force per cylinder
+stroke = L.max() - L.min() + 2 * end_margin      # m
+L_retracted = L.min() - end_margin               # m
+feasible = L_retracted >= stroke + dead_length
+
+# ------------------------------------------------------------------ 4. CYLINDER FORCE CAPACITY (both directions)
+A_cap = math.pi * bore**2 / 4                    # mm2  piston (cap) side
+A_rod_side = A_cap - math.pi * rod**2 / 4        # mm2  rod (annulus) side
+F_extend = eta_cyl * p_relief * A_cap / 1e3      # kN  oil on cap side -> cylinder extends (towards 0 deg)
+F_retract = eta_cyl * p_relief * A_rod_side / 1e3  # kN  oil on rod side -> cylinder retracts (towards 90 deg, EMERGENCY)
+
+# ------------------------------------------------------------------ 5. TRANSFER FUNCTION  V -> extension -> blade angle
+ext = (L - L.min()) + end_margin                 # m   extension from the retracted end
+ext_range = stroke
+V = V_full * ext / ext_range                     # V   linear position sensor over the full stroke
+theta_fit = np.polyval(np.polyfit(V, pitch, 1), V)   # straight-line approximation (as in the lecture)
+err = np.max(np.abs(pitch - theta_fit))
+
+print(f"N = {N:,}   q = {q:.3e}")
+print(f"M_design = {M_design:.1f} kNm   T_d = {gamma_f} * M_design = {T_d:.1f} kNm   ({n_cyl} cylinder(s) per blade)")
+print(f"L = {L.min():.2f} (retracted, {p_hi:.0f} deg) ... {L.max():.2f} m (extended, {p_lo:.0f} deg)   stroke = {stroke:.2f} m")
+print(f"a_min = {a_min:.3f} m   a_max = {a.max():.3f} m")
+print(f"F_d = T_d / ({n_cyl} * a_min) = {F_d:.0f} kN per cylinder")
+print(f"Check retracted length {L_retracted:.2f} m >= stroke + dead length {stroke + dead_length:.2f} m : "
+      + ("OK" if feasible else "NOT FEASIBLE - change d_pivot, r_crank or alpha_feather"))
+print(f"Cylinder {bore:.0f}/{rod:.0f} at {p_relief:.0f} MPa: extend (cap side) {F_extend:.0f} kN, "
+      f"retract (rod side, emergency feather) {F_retract:.0f} kN")
+print("  retract capacity vs F_d: " + ("OK" if F_retract >= F_d else "TOO LOW - larger bore or higher pressure or two cylinders"))
+print(f"Sensor: {V_full:.0f} V over {ext_range * 1000:.0f} mm  ->  {V_full / ext_range / 1000:.4f} V/mm;  "
+      f"max deviation from a straight line V->angle = {err:.1f} deg")
+
+# ------------------------------------------------------------------ 6. PLOTS
+fig, ax = plt.subplots(1, 4, figsize=(18, 4.2))
+ax[0].plot(pitch, L, lw=2); ax[0].set_title('Cylinder length L(pitch)'); ax[0].set_ylabel('L [m]')
+ax[1].plot(pitch, a, lw=2, color='tab:green'); ax[1].axhline(a_min, color='k', ls=':')
+ax[1].set_title('Moment arm a(pitch)'); ax[1].set_ylabel('a [m]')
+ax[2].plot(pitch, F, lw=2, color='tab:red'); ax[2].axhline(F_d, color='k', ls=':', label=f'F_d = {F_d:.0f} kN')
+ax[2].axhline(F_retract, color='tab:purple', ls='--', label=f'retract capacity {F_retract:.0f} kN')
+ax[2].legend(frameon=False); ax[2].set_title('Force per cylinder F = T_d / (n a)'); ax[2].set_ylabel('F [kN]')
+ax[3].plot(V, pitch, lw=2, color='tab:orange', label='geometry (exact)')
+ax[3].plot(V, theta_fit, 'k--', lw=1, label='straight line')
+ax[3].legend(frameon=False); ax[3].set_title('Transfer function: sensor voltage -> pitch'); ax[3].set_xlabel('Sensor output [V]'); ax[3].set_ylabel('Pitch angle [deg]')
+for x in ax[:3]:
+    x.set_xlabel('Pitch angle [deg]  (0 = extended, 90 = retracted)')
+for x in ax:
+    x.grid(alpha=0.3)
+plt.tight_layout(); plt.show()
