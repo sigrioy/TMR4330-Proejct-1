@@ -1,0 +1,33 @@
+"""Gumbel pdf and CDF of the 10-minute extreme pitch torque with the 25-year design point."""
+import numpy as np
+import matplotlib.pyplot as plt
+
+MU, BETA = 200.0, 10.0                      # kNm [GIVEN]
+LIFE_YEARS = 25                             # years [GIVEN]
+N = LIFE_YEARS * 365 * 24 * 6               # 1 314 000 ten-minute periods
+q = 1.0 / N
+
+pdf = lambda x: np.exp(-(x - MU) / BETA - np.exp(-(x - MU) / BETA)) / BETA
+cdf = lambda x: np.exp(-np.exp(-(x - MU) / BETA))
+x25 = MU - BETA * np.log(-np.log(1 - q))    # 25-year extreme torque, 340.9 kNm
+
+x = np.linspace(160, 360, 1500)
+fig, ax1 = plt.subplots(figsize=(9, 5.5))
+ax2 = ax1.twinx()
+l1, = ax1.plot(x, pdf(x), color='#1f77b4', lw=3, label='pdf  f(x)')
+l2, = ax2.plot(x, cdf(x), color='#d62728', lw=3, label='CDF  F(x)')
+ax2.axhline(1.0, color='k', ls=':', lw=1)
+ax2.plot([x25], [cdf(x25)], 'o', color='k', ms=7, zorder=5)
+ax2.annotate(f'x = {x25:.1f} kNm\nF = 1 - q = {cdf(x25):.9f}\nq = 1/N = {q:.2e}',
+             (x25, cdf(x25)), (262, 0.30), arrowprops=dict(arrowstyle='-', color='k'))
+
+ax1.set_xlabel('Pitch torque x [kNm]')
+ax1.set_ylabel('f(x)  [1/kNm]', color='#1f77b4')
+ax2.set_ylabel('F(x)', color='#d62728')
+ax1.set_title(r'Gumbel, 10-min extreme pitch torque ($\mu$ = 200 kNm, $\beta$ = 10 kNm)')
+ax1.set_xlim(150, 370); ax1.grid(alpha=0.25)
+ax1.spines['top'].set_visible(False); ax2.spines['top'].set_visible(False)
+ax1.legend(handles=[l1, l2], frameon=False, loc='center right')
+plt.tight_layout(); plt.show()
+
+
