@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Oct 13 12:18:34 2026
+
+@author: sigridoyre
+"""
+
+"""
+Part 1: design torque, linkage geometry, LVDT transfer function.
+Hydraulic pitch, double-acting cylinder(s) per blade.
+Convention: cylinder fully RETRACTED = blade 90 deg (feather, no lift),
+cylinder fully EXTENDED = blade 0 deg (maximum lift). Emergency = retract (oil on the rod side).
+Pitch range 0-90 deg.
+"""
+import math
+import numpy as np
+try:
+    get_ipython().run_line_magic('matplotlib', 'inline')    # plot in the output (Jupyter / Colab / VS Code)
+except NameError:
+    pass
+import matplotlib.pyplot as plt
+
+# ------------------------------------------------------------------ 1. INPUT
+mu, beta = 200.0, 10.0          # kNm   Gumbel parameters (given in the assignment)
+life_years = 25                 # years (given)
+gamma_f = 1.35                  # [A] load factor, assumed (DTU/AAU background document to IEC 61400-1)
+
+n_cyl = 1                       # [A] number of cylinders per blade (1 or 2)
+r_crank = 1.2                   # m   [A] lever radius: pitch axis -> cylinder pin on the lever
+d_pivot = 4.0                   # m   [A] distance: pitch axis -> cylinder pivot in the hub
+pitch_feather = 90.0            # deg  feather = fully retracted
+pitch_fine = 0.0                # deg  fully extended
+alpha_feather = 30.0            # deg  [A] lever angle at the feather (90 deg, retracted) position
+
+bore, rod = 280.0, 180.0        # mm   [A] cylinder bore and rod diameter (preliminary; part 2 selects the final size)
+p_relief = 28.0                 # MPa  [A] relief pressure
+eta_cyl = 0.95                  # -    [A] mechanical efficiency of the cylinder
+V_full = 10.0                   # V    output of the position sensor over the full stroke
+
+# ------------------------------------------------------------------ 2. DESIGN TORQUE
+N = life_years * 365 * 24 * 6                   # ten-minute periods in the design life
+q = 1.0 / N                                     # exceedance probability per 10 min
+M_design = mu - beta * math.log(-math.log(1 - q))   # kNm  x where F(x) = 1 - q
+T_d = gamma_f * M_design                        # kNm  design torque
+
+# ------------------------------------------------------------------ 3. GEOMETRY
+# alpha = angle at the pitch axis between the line axis->pivot and the lever.
+# The cylinder length is the distance pivot -> lever pin; the moment arm is the perpendicular
+# distance from the pitch axis to the cylinder line of action.
+p_hi, p_lo = pitch_feather, pitch_fine
+pitch = np.linspace(p_lo, p_hi, 600)                          # deg, from fine (extended) to feather (retracted)
+alpha = np.radians(alpha_feather + (p_hi - pitch))            # alpha grows as the cylinder extends
+L = np.sqrt(d_pivot**2 + r_crank**2 - 2 * d_pivot * r_crank * np.cos(alpha))   # m   cylinder length
+a = r_crank * d_pivot * np.sin(alpha) / L                                       # m   moment arm
+F = T_d / (n_cyl * a)                                                           # kN  force per cylinder
+
+a_min = a.min()
+F_d = T_d / (n_cyl * a_min)                      # kN  design force per cylinder
+stroke = L.max() - L.min()                       # m
+
+# ------------------------------------------------------------------ 4. CYLINDER FORCE CAPACITY (both directions)
+A_cap = math.pi * bore**2 / 4                    # mm2  piston (cap) side
+A_rod_side = A_cap - math.pi * rod**2 / 4        # mm2  rod (annulus) side
+F_extend = eta_cyl * p_relief * A_cap / 1e3      # kN  oil on cap side -> cylinder extends (towards 0 deg)
+F_retract = eta_cyl * p_relief * A_rod_side / 1e3  # kN  oil on rod side -> cylinder retracts (towards 90 deg, EMERGENCY)
+
+# ------------------------------------------------------------------ 5. TRANSFER FUNCTION  V -> extension -> blade angle
+ext = L - L.min()                                # m   extension from the retracted end
+ext_range = stroke
+V = V_full * ext / ext_range                     # V   linear position sensor over the full stroke
+theta_fit = np.polyval(np.polyfit(V, pitch, 1), V)   # straight-line approximation (as in the lecture)
+err = np.max(np.abs(pitch - theta_fit))
+
+print(f"N = {N:,}   q = {q:.3e}")
+print(f"M_design = {M_design:.1f} kNm   T_d = {gamma_f} * M_design = {T_d:.1f} kNm   ({n_cyl} cylinder(s) per blade)")
+print(f"L = {L.min():.2f} (retracted, {p_hi:.0f} deg) ... {L.max():.2f} m (extended, {p_lo:.0f} deg)   stroke = {stroke:.2f} m")
+print(f"a_min = {a_min:.3f} m   a_max = {a.max():.3f} m")
+print(f"F_d = T_d / ({n_cyl} * a_min) = {F_d:.0f} kN per cylinder")
+print(f"Cylinder {bore:.0f}/{rod:.0f} at {p_relief:.0f} MPa: extend (cap side) {F_extend:.0f} kN, "
+      f"retract (rod side, emergency feather) {F_retract:.0f} kN")
+print("  retract capacity vs F_d: " + ("OK" if F_retract >= F_d else "TOO LOW - larger bore or higher pressure or two cylinders"))
+print(f"Sensor: {V_full:.0f} V over {ext_range * 1000:.0f} mm  ->  {V_full / ext_range / 1000:.4f} V/mm;  "
+      f"max deviation from a straight line V->angle = {err:.1f} deg")
+
+# ------------------------------------------------------------------ 6. PLOTS
+fig, ax = plt.subplots(1, 4, figsize=(18, 4.2))
+ax[0].plot(pitch, L, lw=2); ax[0].set_title('Cylinder length L(pitch)'); ax[0].set_ylabel('L [m]')
+ax[1].plot(pitch, a, lw=2, color='tab:green'); ax[1].axhline(a_min, color='k', ls=':')
+ax[1].set_title('Moment arm a(pitch)'); ax[1].set_ylabel('a [m]')
+ax[2].plot(pitch, F, lw=2, color='tab:red'); ax[2].axhline(F_d, color='k', ls=':', label=f'F_d = {F_d:.0f} kN')
+ax[2].axhline(F_retract, color='tab:purple', ls='--', label=f'retract capacity {F_retract:.0f} kN')
+ax[2].legend(frameon=False); ax[2].set_title('Force per cylinder F = T_d / (n a)'); ax[2].set_ylabel('F [kN]')
+ax[3].plot(V, pitch, lw=2, color='tab:orange', label='geometry (exact)')
+ax[3].plot(V, theta_fit, 'k--', lw=1, label='straight line')
+ax[3].legend(frameon=False); ax[3].set_title('Transfer function: sensor voltage -> pitch'); ax[3].set_xlabel('Sensor output [V]'); ax[3].set_ylabel('Pitch angle [deg]')
+for x in ax[:3]:
+    x.set_xlabel('Pitch angle [deg]  (0 = extended, 90 = retracted)')
+for x in ax:
+    x.grid(alpha=0.3)
+plt.tight_layout(); plt.show()
+
+
+
+
+
+
+"""
+Part 2: cylinder, rod, buckling, tube, flow, pins, bracket and bolts.
+Paste this BELOW part 1 (it uses T_d, F_d, L, pitch, a, stroke, eta_cyl, n_cyl from part 1).
+Items marked [A] are ASSUMPTIONS.
+"""
+# ------------------------------------------------------------------ 1. INPUT
+gamma_M = 1.10                  # [A] material factor (assumed, not verified)
+p_rel_ring = 28.0               # MPa [A] relief, rod (annulus) side
+p_rel_cap = 19.0                # MPa [A] relief, cap side (limits the pushing force)
+uf_press = 0.90                 # [A] max pressure utilisation when selecting the cylinder
+S_buck_req = 3.5                # [A] required buckling safety factor (Euler, pinned-pinned)
+E_mod = 210e3                   # MPa steel
+Re_rod, Re_tube = 650.0, 355.0  # MPa [A]
+t_tube = 30.0                   # mm [A] cylinder tube wall
+bores = [160, 180, 200, 220, 250, 280, 320, 360, 400]      # mm [A] standard bores
+rods = [90, 100, 110, 125, 140, 160, 180, 200, 220, 250]   # mm [A] standard rods
+rate_norm, rate_em = 2.0, 7.0   # deg/s [A] normal and emergency pitch rate
+v_pipe = 6.0                    # m/s [A] max oil velocity in pipes
+pin_d, sph_B, sph_p_allow = 120.0, 90.0, 120.0     # mm, mm, MPa [A]
+Re_pin = 650.0                  # MPa [A]
+brk_l, brk_b, brk_h, brk_Kt, Re_brk = 0.7, 300.0, 400.0, 2.5, 300.0   # m, mm, mm, -, MPa [A]
+n_bb, h_bb = 16, 0.5            # [A] number of M30 bracket bolts, distance between bolt rows [m]
+As_bb, Rp_bb, Phi = 561.0, 940.0, 0.2   # mm2 (M30), MPa (10.9), - [A] bolt load factor
+
+# ------------------------------------------------------------------ 2. CYLINDER SELECTION
+Lk = L.max() * 1000.0                            # mm  buckling length (pin to pin, fully extended)
+def cyl(D, d):
+    A_cap = math.pi * D**2 / 4; A_ann = A_cap - math.pi * d**2 / 4
+    F_ret = eta_cyl * p_rel_ring * A_ann / 1e3          # kN  retract (emergency), rod side
+    F_ext = eta_cyl * p_rel_cap * A_cap / 1e3           # kN  extend (push), cap side
+    F_s = max(F_ret, F_ext)                             # kN  largest force the cylinder can deliver
+    Pcr = math.pi**2 * E_mod * (math.pi * d**4 / 64) / Lk**2 / 1e3   # kN Euler
+    p_need = F_d * 1e3 / (eta_cyl * A_ann)              # MPa needed on the rod side to give F_d
+    return dict(D=D, d=d, A_cap=A_cap, A_ann=A_ann, F_ret=F_ret, F_ext=F_ext, F_s=F_s, Pcr=Pcr,
+                S=Pcr / F_s, p_need=p_need, UFp=p_need / p_rel_ring)
+choice = None
+for D in bores:
+    for d in rods:
+        if d >= D * 0.75 or d < D * 0.4: continue
+        c = cyl(D, d)
+        if c['UFp'] <= uf_press and c['S'] >= S_buck_req:
+            choice = c; break
+    if choice: break
+c = choice
+D, d_rod, F_s = c['D'], c['d'], c['F_s']
+print(f"\nCylinder {D}/{d_rod} mm:  F_d = {F_d:.0f} kN  | retract (rod side) capacity {c['F_ret']:.0f} kN, extend {c['F_ext']:.0f} kN")
+print(f"  pressure needed on rod side for F_d: {c['p_need'] * 10:.0f} bar  (UF {c['UFp']:.2f} of the {p_rel_ring * 10:.0f} bar relief)")
+print(f"  structure is designed for F_s = {F_s:.0f} kN (the largest force the cylinder can deliver)")
+
+# ------------------------------------------------------------------ 3. ROD, TUBE, FLOW
+sig_rod = F_s * 1e3 / (math.pi * d_rod**2 / 4)               # MPa
+UF_rod = sig_rod / (Re_rod / gamma_M)
+UF_buck = S_buck_req * F_s / c['Pcr']                        # <= 1  means S >= S_req
+Ri = D / 2; Ro = Ri + t_tube
+sig_tube = p_rel_ring * (Ro**2 + Ri**2) / (Ro**2 - Ri**2)   # MPa Lame hoop (relief on the larger-area side is p_rel_ring)
+sig_tube = max(sig_tube, p_rel_cap * (Ro**2 + Ri**2) / (Ro**2 - Ri**2))
+UF_tube = sig_tube / (Re_tube / gamma_M)
+dLdth = np.abs(np.gradient(L, np.radians(pitch)))            # m/rad  cylinder speed per blade angular speed
+v_norm = dLdth.max() * math.radians(rate_norm); v_em = dLdth.max() * math.radians(rate_em)   # m/s
+Q_norm_ext = c['A_cap'] * 1e-6 * v_norm * 60000   # L/min cap side IN when extending (largest normal flow)
+Q_norm = c['A_ann'] * 1e-6 * v_norm * 60000; Q_em_rod = c['A_ann'] * 1e-6 * v_em * 60000   # L/min supplied to rod side
+Q_em_cap = c['A_cap'] * 1e-6 * v_em * 60000                  # L/min returning to tank from the cap side
+d_pipe = math.sqrt(4 * (Q_em_cap / 60000) / (math.pi * v_pipe)) * 1000   # mm inner diameter for the return line
+print(f"  rod: sigma = {sig_rod:.0f} MPa (UF {UF_rod:.2f});  Euler Pcr = {c['Pcr']:.0f} kN, S = {c['S']:.2f} (UF {UF_buck:.2f}), Lk = {Lk / 1000:.2f} m")
+print(f"  tube (Lame): sigma = {sig_tube:.0f} MPa (UF {UF_tube:.2f})")
+print(f"  max cylinder speed: normal {v_norm * 1000:.0f} mm/s, emergency {v_em * 1000:.0f} mm/s;  flow normal {Q_norm_ext:.0f} L/min extending (cap side) / {Q_norm:.0f} L/min retracting (rod side), "
+      f"emergency {Q_em_rod:.0f} L/min (rod side in), {Q_em_cap:.0f} L/min (cap side to tank) -> return line inner diameter >= {d_pipe:.0f} mm")
+
+# ------------------------------------------------------------------ 4. PIN, SPHERICAL BEARING, BRACKET, BOLTS
+vm = math.sqrt((32 * 0.25 * 1.5 / math.pi)**2 + 3 * (2 / math.pi)**2) * F_s * 1e3 / pin_d**2
+UF_pin = vm / (Re_pin / gamma_M)
+p_sph = F_s * 1e3 / (pin_d * sph_B); UF_sph = p_sph / sph_p_allow
+Mb = F_s * brk_l                                             # kNm
+sig_brk = Mb * 1e6 / (brk_b * brk_h**2 / 6) * brk_Kt; UF_brk = sig_brk / (Re_brk / gamma_M)
+Ft = Mb / (h_bb * n_bb / 2) + F_s / n_bb                     # kN external load on the most loaded bolt
+FV = 0.7 * Rp_bb * As_bb / 1e3; Fb = FV + Phi * Ft; Fb_allow = Rp_bb * As_bb / 1e3 / gamma_M
+UF_bb = Fb / Fb_allow
+print(f"  pin d{pin_d:.0f}: von Mises {vm:.0f} MPa (UF {UF_pin:.2f});  spherical bearing: {p_sph:.0f} MPa (UF {UF_sph:.2f})")
+print(f"  bracket: M = {Mb:.0f} kNm, sigma = {sig_brk:.0f} MPa (UF {UF_brk:.2f});  bracket bolts: {Fb:.0f} kN of {Fb_allow:.0f} kN (UF {UF_bb:.2f})")
+
+UF = {'Cylinder pressure (rod side)': c['UFp'], 'Rod, tension': UF_rod, 'Rod, buckling': UF_buck, 'Cylinder tube (Lame)': UF_tube,
+      'Pin': UF_pin, 'Spherical bearing': UF_sph, 'Lever bracket': UF_brk, 'Bracket bolts': UF_bb}
+fig, ax = plt.subplots(figsize=(8, 4.2))
+names = list(UF); vals = [UF[k] for k in names]
+ax.barh(names, vals, color=['tab:red' if v > 1 else 'tab:blue' for v in vals]); ax.axvline(1.0, color='k', ls='--')
+ax.set_xlabel('Utilisation  UF = design load / design resistance'); ax.set_title('ULS utilisation'); ax.invert_yaxis(); ax.grid(alpha=0.3, axis='x')
+plt.tight_layout(); plt.show()
+print("\nMax UF = %.2f (%s)" % (max(vals), names[vals.index(max(vals))]))
+
+# ------------------------------------------------------------------ 5. PUMP (normal operation) [A]
+eta_pump = 0.85                                              # [A] total pump efficiency
+Q_pump = max(Q_norm_ext, Q_norm)                             # L/min the pump must deliver in normal operation
+P_pump_max = p_rel_ring * 1e6 * (Q_pump / 60000) / eta_pump / 1e3   # kW, upper bound at the relief setting
+print(f"Pump: Q >= {Q_pump:.0f} L/min (extension, cap side);  shaft power <= {P_pump_max:.0f} kW at the relief setting ({p_rel_ring*10:.0f} bar), eta={eta_pump}")
+print(f"Emergency flow {Q_em_cap:.0f} L/min is far above the pump flow -> must come from the accumulator ({c['A_ann']*1e-6*stroke*1000:.0f} L of oil for one stroke)")
+
+
+# ------------------------------------------------------------------ 7. alpha_f STUDY (r, d and T_d fixed)
+# Largest cylinder force F_d for different lever angles at the feather position, pitch range 0-90 deg.
+th = np.linspace(pitch_fine, pitch_feather, 901)
+
+def a_min_af(af):
+    al = np.radians(af + (pitch_feather - th))
+    Lc = np.sqrt(d_pivot**2 + r_crank**2 - 2 * d_pivot * r_crank * np.cos(al))
+    return (r_crank * d_pivot * np.sin(al) / Lc).min()
+
+afs = np.arange(20, 50.1, 0.1)
+F_af = np.array([T_d / a_min_af(x) for x in afs])
+print(f"optimum alpha_f = {afs[F_af.argmin()]:.1f} deg, F_d = {F_af.min():.0f} kN")
+for x in (25, 30, 35, 40, 45):
+    print(f"  alpha_f = {x} deg: F_d = {T_d / a_min_af(x):.0f} kN")
+plt.figure(figsize=(6, 4))
+plt.plot(afs, F_af); plt.xlabel(r"$\alpha_f$ [deg]"); plt.ylabel(r"$F_d$ [kN]")
+plt.grid(alpha=.3); plt.show()
